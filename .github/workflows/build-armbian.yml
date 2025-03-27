@@ -22,7 +22,7 @@ on:
       armbian_board:
         description: "Select device board."
         required: false
-        default: "panther-x2"
+        default: "hummingbird-4"
         type: choice
         options:
           - all
