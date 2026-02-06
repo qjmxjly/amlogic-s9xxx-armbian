@@ -503,7 +503,7 @@ jobs:
           token: ${{ secrets.GH_TOKEN}}
 
       - name: Rebuild Armbian
-        uses: hellotheasia/amlogic-s9xxx-armbian@main
+        uses: qjmxjly/amlogic-s9xxx-armbian@main
         if: ${{ steps.clean.outputs.status }} == 'success' && !cancelled()
         with:
           build_target: armbian
