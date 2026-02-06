@@ -232,7 +232,22 @@ jobs:
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
-          docker rmi $(docker images -q) 2>/dev/null
+          set -x  # 开启详细输出
+
+          # 检查 Docker 是否可用
+          if command -v docker &> /dev/null && docker info &>/dev/null; then
+              # 安全地删除镜像（处理空列表）
+              IMAGES=$(docker images -q)
+              if [ -n "$IMAGES" ]; then
+                  echo "Deleting $(echo "$IMAGES" | wc -l) images..."
+                  docker rmi $IMAGES 2>/dev/null || true
+              else
+                  echo "No Docker images to delete"
+              fi
+          else
+              echo "Docker not available, skipping image cleanup"
+          fi
+          
           [[ -n "${AGENT_TOOLSDIRECTORY}" ]] && sudo rm -rf "${AGENT_TOOLSDIRECTORY}"
           sudo rm -rf /usr/share/dotnet /etc/apt/sources.list.d /usr/local/lib/android 2>/dev/null
           sudo swapoff -a
