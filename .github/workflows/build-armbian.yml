@@ -303,6 +303,49 @@ jobs:
                            COMPRESS_OUTPUTIMAGE="sha" SHARE_LOG=yes
           echo "status=success" >> ${GITHUB_OUTPUT}
 
+      - name: Mount image and inject WiFi config
+        id: inject_wifi
+        run: |
+          # 查找生成的镜像文件#
+          
+          IMAGE=$(ls -t output/images/*.img | head -1)
+          echo "Image: $IMAGE"
+          
+          # 创建挂载点
+          mkdir -p /tmp/armbian-boot /tmp/armbian-root
+          
+          # 计算偏移量挂载分区（假设第一分区是boot，第二分区是root）
+          # 使用 parted 获取精确偏移
+          BOOT_OFFSET=$(sudo parted -m $IMAGE unit B print | grep "^1:" | cut -d: -f2 | tr -d 'B')
+          ROOT_OFFSET=$(sudo parted -m $IMAGE unit B print | grep "^2:" | cut -d: -f2 | tr -d 'B')
+          
+          sudo mount -o loop,offset=$BOOT_OFFSET $IMAGE /tmp/armbian-boot 2>/dev/null || true
+          sudo mount -o loop,offset=$ROOT_OFFSET $IMAGE /tmp/armbian-root
+          
+          # 注入 WiFi 预配置文件到 /root/.not_logged_in_yet
+          sudo mkdir -p /tmp/armbian-root/root
+          sudo tee /tmp/armbian-root/root/.not_logged_in_yet > /dev/null << 'EOF'
+          # Armbian First Boot WiFi Preconfig
+          # 参考文档: https://docs.armbian.com/User-Guide_Autoconfig/
+          
+          # 必须开启网络配置
+          PRESET_NET_CHANGE_DEFAULTS="1"
+          
+          # 启用 WiFi
+          PRESET_NET_WIFI_ENABLED="1"
+          PRESET_NET_WIFI_SSID="youxun"
+          PRESET_NET_WIFI_KEY="youxun888"
+          PRESET_NET_WIFI_COUNTRYCODE="CN"  # 根据你的国家修改: US/EU/JP等
+          
+          # 设为 'n' 表示首次启动时自动连接，不交互询问
+          PRESET_CONNECT_WIRELESS="n"
+
+          EOF
+          
+          # 清理
+          sudo umount /tmp/armbian-root /tmp/armbian-boot 2>/dev/null || true
+          rm -rf /tmp/armbian-*
+          
       - name: Organize files and clear space
         id: clean
         if: ${{ steps.compile.outputs.status }} == 'success' && !cancelled()
