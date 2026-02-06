@@ -332,47 +332,65 @@ jobs:
                            COMPRESS_OUTPUTIMAGE="sha" SHARE_LOG=yes
           echo "status=success" >> ${GITHUB_OUTPUT}
 
-      - name: Mount image and inject WiFi config
-        id: inject_wifi
+      - name: Mount image with kpartx
         run: |
-          # 查找生成的镜像文件#
-          
           IMAGE=$(ls -t build/output/images/*.img | head -1)
           echo "Image: $IMAGE"
           
+          sudo apt-get update && sudo apt-get install -y kpartx
+          
           # 创建挂载点
-          mkdir -p /tmp/armbian-boot /tmp/armbian-root
+          sudo mkdir -p /tmp/armbian-boot /tmp/armbian-root
           
-          # 计算偏移量挂载分区（假设第一分区是boot，第二分区是root）
-          # 使用 parted 获取精确偏移
-          BOOT_OFFSET=$(sudo parted -m $IMAGE unit B print | grep "^1:" | cut -d: -f2 | tr -d 'B')
-          ROOT_OFFSET=$(sudo parted -m $IMAGE unit B print | grep "^2:" | cut -d: -f2 | tr -d 'B')
+          # 设置 loop 设备并创建分区映射
+          sudo kpartx -av "$IMAGE"
           
-          sudo mount -o loop,offset=$BOOT_OFFSET $IMAGE /tmp/armbian-boot 2>/dev/null || true
-          sudo mount -o loop,offset=$ROOT_OFFSET $IMAGE /tmp/armbian-root
+          # 等待设备节点创建
+          sleep 2
           
-          # 注入 WiFi 预配置文件到 /root/.not_logged_in_yet
+          # 获取 loop 设备名（如 /dev/loop0）
+          LOOP_DEV=$(sudo losetup -j "$IMAGE" | head -1 | cut -d: -f1 | xargs basename)
+          echo "Loop device: $LOOP_DEV"
+          
+          # 挂载分区（假设 p1=boot, p2=root）
+          BOOT_DEV="/dev/mapper/${LOOP_DEV}p1"
+          ROOT_DEV="/dev/mapper/${LOOP_DEV}p2"
+          
+          # 检查设备是否存在
+          ls -la "$BOOT_DEV" "$ROOT_DEV" || {
+            echo "Devices not found, checking available mappers:"
+            ls -la /dev/mapper/
+            exit 1
+          }
+          
+          # 挂载（不需要 offset，kpartx 已创建映射）
+          sudo mount "$BOOT_DEV" /tmp/armbian-boot 2>/dev/null || echo "No boot partition or already mounted"
+          sudo mount "$ROOT_DEV" /tmp/armbian-root
+          
+          echo "Mounted successfully!"
+          df -h | grep armbian
+          
+          # ========== 注入 WiFi 配置 ==========
+          # 创建 .not_logged_in_yet 或 netplan 配置
           sudo mkdir -p /tmp/armbian-root/root
-          sudo tee /tmp/armbian-root/root/.not_logged_in_yet > /dev/null << 'EOF'
-          # Armbian First Boot WiFi Preconfig
-          # 参考文档: https://docs.armbian.com/User-Guide_Autoconfig/
           
-          # 必须开启网络配置
-          PRESET_NET_CHANGE_DEFAULTS="1"
-          
-          # 启用 WiFi
-          PRESET_NET_WIFI_ENABLED="1"
-          PRESET_NET_WIFI_SSID="youxun"
-          PRESET_NET_WIFI_KEY="youxun888"
-          PRESET_NET_WIFI_COUNTRYCODE="CN"  # 根据你的国家修改: US/EU/JP等
-          
-          # 设为 'n' 表示首次启动时自动连接，不交互询问
-          PRESET_CONNECT_WIRELESS="n"
-
+          # 方法 B: 或者使用 armbian_first_run.txt（更推荐，boot 分区可见）
+          if [ -d /tmp/armbian-boot ]; then
+            sudo tee /tmp/armbian-boot/armbian_first_run.txt > /dev/null << 'EOF'
+          FR_general_delete_this_file_after_completion=1
+          FR_net_change_defaults=1
+          FR_net_wifi_enabled=1
+          FR_net_wifi_ssid='${{ secrets.WIFI_SSID }}'
+          FR_net_wifi_key='${{ secrets.WIFI_PASSWORD }}'
+          FR_net_wifi_countrycode='CN'
+          FR_net_use_static=0
           EOF
+          fi
           
-          # 清理
+          # 卸载和清理
           sudo umount /tmp/armbian-root /tmp/armbian-boot 2>/dev/null || true
+          sudo kpartx -d "$IMAGE"
+          sudo losetup -D 2>/dev/null || true
           rm -rf /tmp/armbian-*
           
       - name: Organize files and clear space
