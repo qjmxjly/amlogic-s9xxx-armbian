@@ -240,6 +240,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Debug Docker status
+        run: |
+          echo "=== Docker Info ==="
+          docker version || echo "Docker not available"
+          docker info 2>/dev/null || echo "Cannot connect to Docker daemon"
+          
+          echo "=== Docker Images ==="
+          docker images -a
+          echo "Image count: $(docker images -q | wc -l)"
+          
+          echo "=== Environment ==="
+          echo "Runner: $RUNNER_OS"
+          cat /etc/os-release 2>/dev/null | head -5
+    
       - name: Initialization environment
         id: init
         env:
