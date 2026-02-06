@@ -337,7 +337,7 @@ jobs:
         run: |
           # 查找生成的镜像文件#
           
-          IMAGE=$(ls -t output/images/*.img | head -1)
+          IMAGE=$(ls -t build/output/images/*.img | head -1)
           echo "Image: $IMAGE"
           
           # 创建挂载点
