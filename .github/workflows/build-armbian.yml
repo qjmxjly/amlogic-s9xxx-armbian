@@ -332,63 +332,121 @@ jobs:
                            COMPRESS_OUTPUTIMAGE="sha" SHARE_LOG=yes
           echo "status=success" >> ${GITHUB_OUTPUT}
 
-      - name: Mount image with kpartx
+      - name: Mount Armbian image (Universal)
         run: |
           IMAGE=$(ls -t build/output/images/*.img | head -1)
           echo "Image: $IMAGE"
           
-          sudo apt-get update && sudo apt-get install -y kpartx
-          
           # 创建挂载点
-          sudo mkdir -p /tmp/armbian-boot /tmp/armbian-root
+          sudo mkdir -p /tmp/armbian-root /tmp/armbian-boot
           
-          # 设置 loop 设备并创建分区映射
+          # 使用 kpartx 创建映射
           sudo kpartx -av "$IMAGE"
-          
-          # 等待设备节点创建
           sleep 2
           
-          # 获取 loop 设备名（如 /dev/loop0）
-          LOOP_DEV=$(sudo losetup -j "$IMAGE" | head -1 | cut -d: -f1 | xargs basename)
-          echo "Loop device: $LOOP_DEV"
+          # 获取基础 loop 设备名
+          LOOP_BASE=$(sudo losetup -j "$IMAGE" | head -1 | cut -d: -f1 | xargs basename)
+          echo "Loop base: $LOOP_BASE"
           
-          # 挂载分区（假设 p1=boot, p2=root）
-          BOOT_DEV="/dev/mapper/${LOOP_DEV}p1"
-          ROOT_DEV="/dev/mapper/${LOOP_DEV}p2"
+          # 查找所有分区设备
+          echo "Available partitions:"
+          ls -la /dev/mapper/${LOOP_BASE}p* 2>/dev/null || ls -la /dev/mapper/ | grep "$LOOP_BASE"
           
-          # 检查设备是否存在
-          ls -la "$BOOT_DEV" "$ROOT_DEV" || {
-            echo "Devices not found, checking available mappers:"
-            ls -la /dev/mapper/
+          # 策略：挂载第一个找到的 Linux 分区作为 root
+          # Odroid N2 通常是单分区或 p1=boot, p2=root
+          
+          # 尝试 p2 作为 root（标准 Armbian）
+          if [ -e "/dev/mapper/${LOOP_BASE}p2" ]; then
+            echo "Found p2, mounting as root..."
+            sudo mount "/dev/mapper/${LOOP_BASE}p2" /tmp/armbian-root
+            [ -e "/dev/mapper/${LOOP_BASE}p1" ] && sudo mount "/dev/mapper/${LOOP_BASE}p1" /tmp/armbian-boot 2>/dev/null || true
+          
+          # 尝试 p1 作为 root（单分区或 p1 是 root）
+          elif [ -e "/dev/mapper/${LOOP_BASE}p1" ]; then
+            echo "Only p1 found, checking if it's boot or root..."
+            
+            # 尝试挂载看内容
+            sudo mount "/dev/mapper/${LOOP_BASE}p1" /tmp/armbian-root
+            
+            # 检查是否有 /boot 目录（区分是 root 还是 boot 分区）
+            if [ -d "/tmp/armbian-root/boot" ] && [ -f "/tmp/armbian-root/etc/os-release" ]; then
+              echo "p1 is the ROOT partition (single partition layout)"
+              # 单分区，boot 子目录在 root 内
+              sudo ln -s /tmp/armbian-root/boot /tmp/armbian-boot 2>/dev/null || true
+            else
+              echo "p1 appears to be BOOT partition only, unmounting..."
+              sudo umount /tmp/armbian-root
+              
+              # 可能是 boot 分区，尝试作为 boot 挂载
+              sudo mount "/dev/mapper/${LOOP_BASE}p1" /tmp/armbian-boot 2>/dev/null || true
+              
+              # 如果没有其他分区，直接用 boot 作为 root（特殊情况）
+              sudo mount "/dev/mapper/${LOOP_BASE}p1" /tmp/armbian-root
+            fi
+          else
+            echo "ERROR: No partitions found!"
             exit 1
-          }
+          fi
           
-          # 挂载（不需要 offset，kpartx 已创建映射）
-          sudo mount "$BOOT_DEV" /tmp/armbian-boot 2>/dev/null || echo "No boot partition or already mounted"
-          sudo mount "$ROOT_DEV" /tmp/armbian-root
+          # 验证挂载
+          echo "=== Root partition content ==="
+          ls -la /tmp/armbian-root/ | head -20
           
-          echo "Mounted successfully!"
-          df -h | grep armbian
+          echo "=== Boot partition content ==="
+          ls -la /tmp/armbian-boot/ 2>/dev/null | head -10 || echo "No separate boot"
+          
+          # 检查是否有 /etc 目录确认是 root
+          if [ ! -d "/tmp/armbian-root/etc" ]; then
+            echo "ERROR: /etc not found, this doesn't look like a root filesystem!"
+            exit 1
+          fi
           
           # ========== 注入 WiFi 配置 ==========
-          # 创建 .not_logged_in_yet 或 netplan 配置
-          sudo mkdir -p /tmp/armbian-root/root
           
-          # 方法 B: 或者使用 armbian_first_run.txt（更推荐，boot 分区可见）
-          if [ -d /tmp/armbian-boot ]; then
-            sudo tee /tmp/armbian-boot/armbian_first_run.txt > /dev/null << 'EOF'
+          # 方法 1: 使用 armbian_first_run.txt (推荐，因为可以放在 boot 分区)
+          if mountpoint /tmp/armbian-boot > /dev/null 2>&1 || [ -d "/tmp/armbian-root/boot" ]; then
+            BOOT_DIR="/tmp/armbian-boot"
+            # 如果是单分区，boot 是子目录
+            [ -d "/tmp/armbian-root/boot" ] && BOOT_DIR="/tmp/armbian-root/boot"
+            
+            echo "Creating armbian_first_run.txt in $BOOT_DIR..."
+            sudo tee "${BOOT_DIR}/armbian_first_run.txt" > /dev/null << 'EOF'
           FR_general_delete_this_file_after_completion=1
           FR_net_change_defaults=1
           FR_net_wifi_enabled=1
-          FR_net_wifi_ssid='${{ secrets.WIFI_SSID }}'
-          FR_net_wifi_key='${{ secrets.WIFI_PASSWORD }}'
+          FR_net_wifi_ssid='youxun'
+          FR_net_wifi_key='youxun888'
           FR_net_wifi_countrycode='CN'
           FR_net_use_static=0
           EOF
+            echo "Created armbian_first_run.txt"
+            cat "${BOOT_DIR}/armbian_first_run.txt"
           fi
           
-          # 卸载和清理
-          sudo umount /tmp/armbian-root /tmp/armbian-boot 2>/dev/null || true
+          # 方法 2: 同时创建 .not_logged_in_yet 在 root 分区（双重保险）
+          sudo mkdir -p /tmp/armbian-root/root
+          sudo tee /tmp/armbian-root/root/.not_logged_in_yet > /dev/null << 'EOF'
+          PRESET_NET_CHANGE_DEFAULTS="1"
+          PRESET_NET_WIFI_ENABLED="1"
+          PRESET_NET_WIFI_SSID="youxun"
+          PRESET_NET_WIFI_KEY="youxun888"
+          PRESET_NET_WIFI_COUNTRYCODE="CN"
+          PRESET_CONNECT_WIRELESS="n"
+          PRESET_ROOT_PASSWORD="123456"
+          SET_LANG_BASED_ON_LOCATION="n"
+          PRESET_LOCALE="en_US.UTF-8"
+          PRESET_TIMEZONE="Asia/Shanghai"
+          PRESET_USER_NAME="ros"
+          PRESET_USER_PASSWORD="123456"
+          PRESET_DEFAULT_REALNAME="Armbian User"
+          PRESET_USER_SHELL="bash"
+          EOF
+          
+          echo "Created .not_logged_in_yet"
+          
+          # 清理卸载
+          sudo umount /tmp/armbian-boot 2>/dev/null || true
+          sudo umount /tmp/armbian-root 2>/dev/null || true
           sudo kpartx -d "$IMAGE"
           sudo losetup -D 2>/dev/null || true
           rm -rf /tmp/armbian-*
