@@ -444,12 +444,41 @@ jobs:
           
           echo "Created .not_logged_in_yet"
           
-          # 清理卸载
-          sudo umount /tmp/armbian-boot 2>/dev/null || true
-          sudo umount /tmp/armbian-root 2>/dev/null || true
-          sudo kpartx -d "$IMAGE"
+          # 清理卸载（修复版）
+          echo "Cleaning up..."
+          
+          # 1. 先卸载 boot（如果是挂载点）
+          if mountpoint /tmp/armbian-boot > /dev/null 2>&1; then
+              sudo umount /tmp/armbian-boot 2>/dev/null || true
+          fi
+          
+          # 2. 删除符号链接（如果是 symlink）
+          if [ -L "/tmp/armbian-boot/boot" ]; then
+              sudo rm -f /tmp/armbian-boot/boot 2>/dev/null || true
+          fi
+          
+          # 3. 卸载 root 分区
+          if mountpoint /tmp/armbian-root > /dev/null 2>&1; then
+              sudo umount /tmp/armbian-root || {
+                  echo "Force unmounting..."
+                  sudo umount -l /tmp/armbian-root 2>/dev/null || true
+              }
+          fi
+          
+          # 4. 移除 loop 设备映射
+          sudo kpartx -d "$IMAGE" 2>/dev/null || true
           sudo losetup -D 2>/dev/null || true
-          rm -rf /tmp/armbian-*
+          
+          # 5. 等待设备释放
+          sleep 1
+          
+          # 6. 删除目录（现在应该可以了）
+          sudo rm -rf /tmp/armbian-boot /tmp/armbian-root 2>/dev/null || {
+              echo "Warning: Could not remove directories, but they will be cleaned by OS later"
+          }
+          
+          echo "Cleanup completed"
+
           
       - name: Organize files and clear space
         id: clean
